@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+venv/
+ENV/
+env/
+
+# Playwright browser binaries
+**/playwright/.local-browsers/
+
+# VS Code settings
+.vscode/
+
+# Scraped CSV files (do not commit data)
+scrape_data/*.csv
+
+# Downloaded images
+scrape_data/images/
+images/
+*.jpg
+*.png
+*.webp
+
+# OS junk
+.DS_Store
+Thumbs.db

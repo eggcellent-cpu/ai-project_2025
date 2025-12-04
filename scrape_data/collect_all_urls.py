@@ -41,7 +41,7 @@ def scroll_down(page, steps=8, pause=800):
 # ---------------------------
 #  AMAZON
 # ---------------------------
-def collect_amazon_urls(page, brand, qtype, max_products=10):
+def collect_amazon_urls(page, brand, qtype, max_products=30):
     url = AMAZON_SEARCH.format(brand=brand, qtype=qtype)
     safe_goto(page, url)
     page.wait_for_timeout(2500)
@@ -73,7 +73,7 @@ def collect_amazon_urls(page, brand, qtype, max_products=10):
 # ---------------------------
 #  LAZADA
 # ---------------------------
-def collect_lazada_urls(page, brand, qtype, max_products=10):
+def collect_lazada_urls(page, brand, qtype, max_products=30):
     url = LAZADA_SEARCH.format(brand=brand, qtype=qtype)
     # NOTE: qtype is already in format string above as {qtype}, but we left it literal in URL
     # to avoid breaking your old URL. We’ll just manually replace here:
@@ -112,13 +112,12 @@ def collect_lazada_urls(page, brand, qtype, max_products=10):
 # ---------------------------
 #  EBAY
 # ---------------------------
-def collect_ebay_urls(page, brand, qtype, max_products=10):
+def collect_ebay_urls(page, brand, qtype, max_products=30):
     url = EBAY_SEARCH.format(brand=brand, qtype=qtype)
     safe_goto(page, url)
     page.wait_for_timeout(2000)
 
     links = set()
-
     anchors = page.query_selector_all("a.s-item__link")
 
     if not anchors:

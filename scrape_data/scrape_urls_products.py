@@ -7,7 +7,6 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-
 INPUT_URL_CSV = "all_product_urls.csv"
 OUTPUT_CSV = "products_other_visual_dataset.csv"
 
@@ -25,7 +24,7 @@ def domain_of(url: str) -> str:
     return "other"
 
 
-def safe_goto(page, url: str, timeout: int = 30000):
+def safe_goto(page, url: str, timeout: int = 25000):
     try:
         page.goto(url, timeout=timeout, wait_until="domcontentloaded")
     except Exception:
@@ -63,9 +62,6 @@ def pad_images(imgs, max_n=4):
 
 
 def classify_product_type(title: str) -> str:
-    """
-    Classify into Printer / Toner / Ink / Other based on title keywords.
-    """
     if not title:
         return "Other"
 
@@ -99,8 +95,9 @@ def classify_product_type(title: str) -> str:
 # ----------------- AMAZON ----------------- #
 
 def scrape_amazon(page, url):
-    safe_goto(page, url, timeout=45000)
-    time.sleep(2)
+    safe_goto(page, url, timeout=30000)
+    # shorter sleep, rely mostly on DOMContentLoaded
+    page.wait_for_timeout(1200)
     soup = soup_from_page(page)
 
     title, og_img = get_og_title_and_image(soup)
@@ -135,8 +132,8 @@ def scrape_amazon(page, url):
 # ----------------- LAZADA ----------------- #
 
 def scrape_lazada(page, url):
-    safe_goto(page, url, timeout=45000)
-    time.sleep(3)
+    safe_goto(page, url, timeout=30000)
+    page.wait_for_timeout(1800)
     soup = soup_from_page(page)
 
     title, og_img = get_og_title_and_image(soup)
@@ -161,8 +158,8 @@ def scrape_lazada(page, url):
 # ----------------- EBAY ----------------- #
 
 def scrape_ebay(page, url):
-    safe_goto(page, url, timeout=45000)
-    time.sleep(2)
+    safe_goto(page, url, timeout=30000)
+    page.wait_for_timeout(1200)
     soup = soup_from_page(page)
 
     title, og_img = get_og_title_and_image(soup)
@@ -202,8 +199,8 @@ def scrape_ebay(page, url):
 # ----------------- GENERIC ----------------- #
 
 def scrape_generic(page, url):
-    safe_goto(page, url, timeout=45000)
-    time.sleep(2)
+    safe_goto(page, url, timeout=25000)
+    page.wait_for_timeout(1000)
     soup = soup_from_page(page)
 
     title, og_img = get_og_title_and_image(soup)
@@ -234,6 +231,7 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
+        page.set_default_timeout(25000)
 
         for idx, row in enumerate(url_rows, 1):
             url = row["URL"]
@@ -262,7 +260,7 @@ def main():
 
             product_type = classify_product_type(title)
 
-            # Optional: skip non-printer / toner / ink
+            # keep only Printer / Toner / Ink
             if product_type == "Other":
                 print("   [SKIP] Not printer/toner/ink based on title.")
                 continue

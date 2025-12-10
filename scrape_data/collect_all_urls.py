@@ -11,9 +11,12 @@ QUERY_TYPES = ["printer", "toner", "ink"]
 
 AMAZON_SEARCH = "https://www.amazon.sg/s?k={brand}+{qtype}"
 LAZADA_SEARCH = "https://www.lazada.sg/catalog/?q={brand}%20{qtype}"
-EBAY_SEARCH = "https://www.ebay.com/sch/i.html?_nkw={brand}+{qtype}"
+EBAY_SEARCH   = "https://www.ebay.com/sch/i.html?_nkw={brand}+{qtype}"
 
 OUTPUT_URL_CSV = "all_product_urls.csv"
+
+# how many product URLs per (brand, qtype, source)
+MAX_PRODUCTS_PER_QUERY = 60
 
 
 # ---------------------------
@@ -31,7 +34,7 @@ def safe_goto(page, url, timeout=30000):
             print("  ⚠️ FAILED TO LOAD:", url)
 
 
-def scroll_down(page, steps=8, pause=800):
+def scroll_down(page, steps=10, pause=800):
     """Scroll to force SPA sites (like Lazada) to load more items."""
     for _ in range(steps):
         page.mouse.wheel(0, 2000)
@@ -41,7 +44,7 @@ def scroll_down(page, steps=8, pause=800):
 # ---------------------------
 #  AMAZON
 # ---------------------------
-def collect_amazon_urls(page, brand, qtype, max_products=30):
+def collect_amazon_urls(page, brand, qtype, max_products=MAX_PRODUCTS_PER_QUERY):
     url = AMAZON_SEARCH.format(brand=brand, qtype=qtype)
     safe_goto(page, url)
     page.wait_for_timeout(2500)
@@ -73,16 +76,12 @@ def collect_amazon_urls(page, brand, qtype, max_products=30):
 # ---------------------------
 #  LAZADA
 # ---------------------------
-def collect_lazada_urls(page, brand, qtype, max_products=30):
+def collect_lazada_urls(page, brand, qtype, max_products=MAX_PRODUCTS_PER_QUERY):
     url = LAZADA_SEARCH.format(brand=brand, qtype=qtype)
-    # NOTE: qtype is already in format string above as {qtype}, but we left it literal in URL
-    # to avoid breaking your old URL. We’ll just manually replace here:
-    url = url.replace("{qtype}", qtype)
-
     safe_goto(page, url)
     page.wait_for_timeout(3000)
 
-    scroll_down(page, steps=12, pause=500)
+    scroll_down(page, steps=15, pause=500)
 
     links = set()
     anchors = page.query_selector_all("a[href*='/products/']")
@@ -112,7 +111,7 @@ def collect_lazada_urls(page, brand, qtype, max_products=30):
 # ---------------------------
 #  EBAY
 # ---------------------------
-def collect_ebay_urls(page, brand, qtype, max_products=30):
+def collect_ebay_urls(page, brand, qtype, max_products=MAX_PRODUCTS_PER_QUERY):
     url = EBAY_SEARCH.format(brand=brand, qtype=qtype)
     safe_goto(page, url)
     page.wait_for_timeout(2000)
@@ -124,12 +123,7 @@ def collect_ebay_urls(page, brand, qtype, max_products=30):
         anchors = page.query_selector_all("a[href*='/itm/']")
 
     if not anchors:
-        print(f"  ⚠️ eBay ({qtype}): no product anchors found for {brand}, dumping HTML...")
-        html = page.content()
-        debug_name = f"ebay_debug_{brand}_{qtype}.html"
-        with open(debug_name, "w", encoding="utf-8") as f:
-            f.write(html)
-        print(f"  ⚠️ eBay: wrote HTML to {debug_name}")
+        print(f"  ⚠️ eBay ({qtype}): no product anchors found for {brand}")
         return []
 
     print(f"  eBay ({qtype}): found {len(anchors)} anchors before filtering")
@@ -153,6 +147,7 @@ def collect_ebay_urls(page, brand, qtype, max_products=30):
 # ---------------------------
 def main():
     rows = []
+    seen_urls = set()   # avoid duplicates across all sources/brands
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -172,6 +167,9 @@ def main():
                 # AMAZON
                 print("=== Amazon ===")
                 for u in collect_amazon_urls(page, brand, qtype):
+                    if u in seen_urls:
+                        continue
+                    seen_urls.add(u)
                     print("  Amazon:", u)
                     rows.append({
                         "URL": u,
@@ -183,6 +181,9 @@ def main():
                 # LAZADA
                 print("=== Lazada ===")
                 for u in collect_lazada_urls(page, brand, qtype):
+                    if u in seen_urls:
+                        continue
+                    seen_urls.add(u)
                     print("  Lazada:", u)
                     rows.append({
                         "URL": u,
@@ -194,6 +195,9 @@ def main():
                 # EBAY
                 print("=== eBay ===")
                 for u in collect_ebay_urls(page, brand, qtype):
+                    if u in seen_urls:
+                        continue
+                    seen_urls.add(u)
                     print("  eBay  :", u)
                     rows.append({
                         "URL": u,
@@ -202,6 +206,7 @@ def main():
                         "QueryType": qtype,
                     })
 
+                # brief pause between query types
                 time.sleep(1.5)
 
         browser.close()
@@ -212,7 +217,7 @@ def main():
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"\n✅ SAVED {len(rows)} URLs → {OUTPUT_URL_CSV}")
+    print(f"\n✅ SAVED {len(rows)} UNIQUE URLs → {OUTPUT_URL_CSV}")
 
 
 if __name__ == "__main__":

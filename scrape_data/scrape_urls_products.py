@@ -65,26 +65,22 @@ def pad_images(imgs, max_n=4):
 def classify_product_type(title: str) -> str:
     """
     Classify into Printer / Toner / Ink / Other based on title keywords.
-    You can refine these keyword lists later.
     """
     if not title:
         return "Other"
 
     t = title.lower()
 
-    # Printer keywords
     printer_keywords = [
         "printer", "laserjet", "inkjet", "multifunction",
         "all-in-one", "mfp"
     ]
 
-    # Toner keywords
     toner_keywords = [
         "toner", "drum unit", "laser cartridge",
         "toner cartridge"
     ]
 
-    # Ink keywords
     ink_keywords = [
         "ink", "ink bottle", "ink tank",
         "ink cartridge"
@@ -233,6 +229,7 @@ def main():
         url_rows = [row for row in csv.DictReader(f) if row.get("URL")]
 
     rows_out = []
+    seen_keys = set()   # to dedupe by (source, brand, title)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -269,6 +266,12 @@ def main():
             if product_type == "Other":
                 print("   [SKIP] Not printer/toner/ink based on title.")
                 continue
+
+            key = (source, brand, title.strip())
+            if key in seen_keys:
+                print("   [SKIP] Duplicate product (same source/brand/title)")
+                continue
+            seen_keys.add(key)
 
             print("   title:", title)
             print("   type :", product_type)

@@ -10,11 +10,9 @@ import time
 # ---------------------------
 
 BRANDS = ["Brother", "Canon", "Epson", "HP", "Ricoh", "Samsung", "Xerox"]
-
-# High-level product types you still care about
 QUERY_TYPES = ["printer", "toner", "ink"]
 
-# More fine-grained variants per query type for visual variety
+# Fine-grained keywords for variety
 QUERY_VARIANTS = {
     "printer": [
         "printer",
@@ -38,25 +36,33 @@ QUERY_VARIANTS = {
     ],
 }
 
-# Search URL templates for each source
-AMAZON_SEARCH      = "https://www.amazon.sg/s?k={query}"
-EBAY_SEARCH        = "https://www.ebay.com/sch/i.html?_nkw={query}"
-ALIEXPRESS_SEARCH  = "https://www.aliexpress.com/wholesale?SearchText={query}"
-HARVEY_SEARCH      = "https://www.harveynorman.com.sg/search?q={query}"
-CHALLENGER_SEARCH  = "https://www.challenger.sg/search?q={query}"
+# Search templates
+AMAZON_SEARCH = "https://www.amazon.sg/s?k={query}"
+EBAY_SEARCH = "https://www.ebay.com/sch/i.html?_nkw={query}"
+LAZADA_SEARCH = "https://www.lazada.sg/catalog/?q={query}"
+CHALLENGER_SEARCH = "https://www.challenger.sg/search?q={query}"
 
 OUTPUT_URL_CSV = "all_product_urls.csv"
 
-# Cap per (brand, keyword, source)
-MAX_PRODUCTS_PER_VARIANT_PER_SOURCE = 50
+# Max per keyword per source
+MAX_PRODUCTS_PER_VARIANT_PER_SOURCE = 40
+
+# NEW: Only keep reliable sources
+ALLOWED_SOURCES = {"amazon", "ebay", "challenger", "lazada"}
+
+# NEW: Stop when balanced dataset is ready
+TARGET_PER_CLASS = {
+    "printer": 1000,
+    "toner": 1000,
+    "ink": 1000,
+}
 
 
 # ---------------------------
-#  COMMON UTILITIES
+#  UTILITIES
 # ---------------------------
 
 def safe_goto(page, url, timeout=20000):
-    """Load URL with fallback logic to avoid crashes."""
     print(f"  → GOTO {url}")
     try:
         page.goto(url, timeout=timeout, wait_until="domcontentloaded")
@@ -64,11 +70,10 @@ def safe_goto(page, url, timeout=20000):
         try:
             page.goto(url, timeout=timeout, wait_until="load")
         except Exception:
-            print("  ⚠️ FAILED TO LOAD:", url)
+            print("  ⚠ FAILED:", url)
 
 
 def scroll_down(page, steps=8, pause=400):
-    """Scroll to force SPA / infinite-scroll sites to load more items."""
     for _ in range(steps):
         page.mouse.wheel(0, 2000)
         page.wait_for_timeout(pause)
@@ -82,17 +87,11 @@ def collect_amazon_urls(page, brand, keyword, max_products):
     query = quote_plus(f"{brand} {keyword}")
     url = AMAZON_SEARCH.format(query=query)
     safe_goto(page, url)
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(1200)
 
     links = set()
-
-    anchors = page.query_selector_all(
-        "a.a-link-normal.s-underline-text.s-underline-link-text"
-    )
-    if not anchors:
-        anchors = page.query_selector_all("a.a-link-normal.s-no-outline")
-
-    print(f"  Amazon ({keyword}): found {len(anchors)} anchors before filtering")
+    anchors = page.query_selector_all("a.a-link-normal.s-no-outline") or \
+              page.query_selector_all("a.a-link-normal")
 
     for a in anchors:
         href = a.get_attribute("href")
@@ -104,7 +103,6 @@ def collect_amazon_urls(page, brand, keyword, max_products):
         if len(links) >= max_products:
             break
 
-    print(f"  Amazon ({keyword}): collected {len(links)} product URLs for {brand}")
     return list(links)
 
 
@@ -113,312 +111,182 @@ def collect_amazon_urls(page, brand, keyword, max_products):
 # ---------------------------
 
 def collect_ebay_urls(page, brand, keyword, max_products):
-    from playwright.sync_api import Error  # safe to import here
-
     query = quote_plus(f"{brand} {keyword}")
     url = EBAY_SEARCH.format(query=query)
     safe_goto(page, url)
 
-    # Let the page fully settle if possible
     try:
         page.wait_for_load_state("networkidle")
-    except Error:
-        # fallback – not fatal
-        page.wait_for_timeout(2000)
+    except:
+        page.wait_for_timeout(1500)
 
     links = set()
-
-    try:
-        anchors = page.query_selector_all("a.s-item__link")
-    except Error as e:
-        print(f"  ⚠ eBay ({keyword}): query_selector_all failed due to navigation: {e}")
-        return []
-
-    if not anchors:
-        try:
-            anchors = page.query_selector_all("a[href*='/itm/']")
-        except Error as e:
-            print(f"  ⚠ eBay ({keyword}): fallback selector also failed: {e}")
-            return []
-
-    if not anchors:
-        print(f"  ⚠ eBay ({keyword}): no product anchors found for {brand}")
-        return []
-
-    print(f"  eBay ({keyword}): found {len(anchors)} anchors before filtering")
+    anchors = page.query_selector_all("a.s-item__link") or \
+              page.query_selector_all("a[href*='/itm/']")
 
     for a in anchors:
         href = a.get_attribute("href")
-        if not href:
-            continue
-        if "/itm/" in href:
-            clean = href.split("?")[0]
-            links.add(clean)
+        if href and "/itm/" in href:
+            links.add(href.split("?")[0])
         if len(links) >= max_products:
             break
 
-    print(f"  eBay ({keyword}): collected {len(links)} product URLs for {brand}")
     return list(links)
 
 
-
 # ---------------------------
-#  ALIEXPRESS
+#  LAZADA
 # ---------------------------
 
-def collect_aliexpress_urls(page, brand, keyword, max_products):
-    """
-    AliExpress search:
-    - We look for product anchors with '/item/' in href.
-    - Normalise to https://www.aliexpress.com/...
-    """
+def collect_lazada_urls(page, brand, keyword, max_products):
     query = quote_plus(f"{brand} {keyword}")
-    url = ALIEXPRESS_SEARCH.format(query=query)
+    url = LAZADA_SEARCH.format(query=query)
     safe_goto(page, url)
-    page.wait_for_timeout(2500)
+    page.wait_for_timeout(2000)
 
-    # Scroll to load more cards
-    scroll_down(page, steps=8, pause=400)
+    scroll_down(page, steps=10, pause=350)
 
+    anchors = page.query_selector_all("a[href*='/products/']")
     links = set()
-    anchors = page.query_selector_all("a[href*='/item/']")
-
-    print(f"  AliExpress ({keyword}): found {len(anchors)} anchors before filtering")
 
     for a in anchors:
         href = a.get_attribute("href")
         if not href:
             continue
-
-        # AliExpress sometimes gives protocol-relative or relative URLs
         if href.startswith("//"):
             href = "https:" + href
         elif href.startswith("/"):
-            href = "https://www.aliexpress.com" + href
+            href = "https://www.lazada.sg" + href
 
-        clean = href.split("?")[0]
-
-        # Light sanity check
-        if "aliexpress.com/item" not in clean:
-            continue
-
-        links.add(clean)
-
+        links.add(href.split("?")[0])
         if len(links) >= max_products:
             break
 
-    print(f"  AliExpress ({keyword}): collected {len(links)} product URLs for {brand}")
-    return list(links)
-
-
-def collect_harvey_urls(page, brand, keyword, max_products):
-    """
-    Harvey Norman SG:
-    - Product URLs often end with `.html`, not necessarily `/products/`.
-    - We'll:
-        1) Grab all <a> that link to .html product pages
-        2) Filter by brand / query keywords in URL or link text
-    """
-    query = quote_plus(f"{brand} {keyword}")
-    url = HARVEY_SEARCH.format(query=query)
-    safe_goto(page, url)
-    page.wait_for_timeout(2500)
-
-    scroll_down(page, steps=6, pause=400)
-
-    links = set()
-    # broader selector: any product-ish link ending with .html
-    anchors = page.query_selector_all("a[href$='.html']")
-
-    print(f"  Harvey Norman ({keyword}): found {len(anchors)} anchors before filtering")
-
-    wanted_terms = [brand.lower(), "printer", "toner", "ink"]
-
-    for a in anchors:
-        href = a.get_attribute("href")
-        if not href:
-            continue
-
-        # normalise URL
-        if href.startswith("//"):
-            href = "https:" + href
-        elif href.startswith("/"):
-            href = "https://www.harveynorman.com.sg" + href
-
-        clean = href.split("?")[0]
-
-        # quick filter: must be on harveynorman and end with .html
-        if "harveynorman.com.sg" not in clean:
-            continue
-
-        # check text & href for relevant terms
-        text = (a.inner_text() or "").lower()
-        haystack = clean.lower() + " " + text
-
-        if not any(term in haystack for term in wanted_terms):
-            continue
-
-        links.add(clean)
-
-        if len(links) >= max_products:
-            break
-
-    print(f"  Harvey Norman ({keyword}): collected {len(links)} product URLs for {brand}")
     return list(links)
 
 
 # ---------------------------
-#  CHALLENGER (SG)
+#  CHALLENGER
 # ---------------------------
 
 def collect_challenger_urls(page, brand, keyword, max_products):
-    """
-    Challenger SG:
-    - Product URLs often contain '/products/' or '/product/'.
-    - We grab both patterns and normalise.
-    """
     query = quote_plus(f"{brand} {keyword}")
     url = CHALLENGER_SEARCH.format(query=query)
     safe_goto(page, url)
     page.wait_for_timeout(2500)
 
-    scroll_down(page, steps=6, pause=400)
+    scroll_down(page, steps=8, pause=350)
 
-    links = set()
     anchors = page.query_selector_all("a[href*='/products/'], a[href*='/product/']")
-
-    print(f"  Challenger ({keyword}): found {len(anchors)} anchors before filtering")
+    links = set()
 
     for a in anchors:
         href = a.get_attribute("href")
         if not href:
             continue
-
-        if href.startswith("//"):
-            href = "https:" + href
-        elif href.startswith("/"):
+        if href.startswith("/"):
             href = "https://www.challenger.sg" + href
-
-        clean = href.split("?")[0]
-
-        if "/product" not in clean:
-            continue
-
-        links.add(clean)
-
+        links.add(href.split("?")[0])
         if len(links) >= max_products:
             break
 
-    print(f"  Challenger ({keyword}): collected {len(links)} product URLs for {brand}")
     return list(links)
 
 
 # ---------------------------
-#  MAIN
+#  MAIN SCRAPER
 # ---------------------------
 
 def main():
     rows = []
-    seen_urls = set()   # avoid duplicates across all sources/brands
+    seen = set()
+
+    # New counters for balanced dataset
+    class_counts = {k: 0 for k in TARGET_PER_CLASS}
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
+        browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         page.set_default_timeout(20000)
 
         for brand in BRANDS:
             print("\n==============================")
-            print(f"     BRAND: {brand}")
-            print("==============================")
+            print(f"      BRAND: {brand}")
+            print("==============================\n")
 
             for qtype in QUERY_TYPES:
-                print(f"\n----- QUERY TYPE: {qtype.upper()} -----")
-                variants = QUERY_VARIANTS.get(qtype, [qtype])
+                print(f"--- QUERY TYPE: {qtype.upper()} ---")
+                variants = QUERY_VARIANTS[qtype]
 
                 for keyword in variants:
-                    print(f"\n  🔍 keyword: {keyword}")
-                    per_variant_cap = MAX_PRODUCTS_PER_VARIANT_PER_SOURCE
+
+                    # stop early if full dataset collected
+                    if all(class_counts[t] >= TARGET_PER_CLASS[t] for t in TARGET_PER_CLASS):
+                        print("\n🎉 Reached target dataset size — stopping early.")
+                        browser.close()
+                        return save_csv(rows)
+
+                    print(f"\n🔍 keyword = {keyword}")
+                    cap = MAX_PRODUCTS_PER_VARIANT_PER_SOURCE
 
                     # AMAZON
-                    print("  === Amazon ===")
-                    for u in collect_amazon_urls(page, brand, keyword, per_variant_cap):
-                        if u in seen_urls:
-                            continue
-                        seen_urls.add(u)
-                        rows.append({
-                            "URL": u,
-                            "Source": "amazon",
-                            "Brand": brand,
-                            "QueryType": qtype,
-                        })
+                    for url in collect_amazon_urls(page, brand, keyword, cap):
+                        if add_row(url, "amazon", brand, qtype, rows, seen, class_counts):
+                            pass
 
                     # EBAY
-                    print("  === eBay ===")
-                    for u in collect_ebay_urls(page, brand, keyword, per_variant_cap):
-                        if u in seen_urls:
-                            continue
-                        seen_urls.add(u)
-                        rows.append({
-                            "URL": u,
-                            "Source": "ebay",
-                            "Brand": brand,
-                            "QueryType": qtype,
-                        })
+                    for url in collect_ebay_urls(page, brand, keyword, cap):
+                        if add_row(url, "ebay", brand, qtype, rows, seen, class_counts):
+                            pass
 
-                    # ALIEXPRESS
-                    print("  === AliExpress ===")
-                    for u in collect_aliexpress_urls(page, brand, keyword, per_variant_cap):
-                        if u in seen_urls:
-                            continue
-                        seen_urls.add(u)
-                        rows.append({
-                            "URL": u,
-                            "Source": "aliexpress",
-                            "Brand": brand,
-                            "QueryType": qtype,
-                        })
-
-                    # HARVEY NORMAN
-                    print("  === Harvey Norman ===")
-                    for u in collect_harvey_urls(page, brand, keyword, per_variant_cap):
-                        if u in seen_urls:
-                            continue
-                        seen_urls.add(u)
-                        rows.append({
-                            "URL": u,
-                            "Source": "harvey_norman",
-                            "Brand": brand,
-                            "QueryType": qtype,
-                        })
+                    # LAZADA
+                    for url in collect_lazada_urls(page, brand, keyword, cap):
+                        if add_row(url, "lazada", brand, qtype, rows, seen, class_counts):
+                            pass
 
                     # CHALLENGER
-                    print("  === Challenger ===")
-                    for u in collect_challenger_urls(page, brand, keyword, per_variant_cap):
-                        if u in seen_urls:
-                            continue
-                        seen_urls.add(u)
-                        rows.append({
-                            "URL": u,
-                            "Source": "challenger",
-                            "Brand": brand,
-                            "QueryType": qtype,
-                        })
+                    for url in collect_challenger_urls(page, brand, keyword, cap):
+                        if add_row(url, "challenger", brand, qtype, rows, seen, class_counts):
+                            pass
 
-                    # brief pause between variants to be nice to servers
                     time.sleep(0.7)
 
         browser.close()
 
-    # Write CSV
+    save_csv(rows)
+
+
+# ---------------------------
+#  HELPERS
+# ---------------------------
+
+def add_row(url, source, brand, qtype, rows, seen, class_counts):
+    key = (url, source)
+    if key in seen:
+        return False
+
+    seen.add(key)
+    class_counts[qtype] += 1
+
+    rows.append({
+        "URL": url,
+        "Source": source,
+        "Brand": brand,
+        "QueryType": qtype,
+    })
+
+    return True
+
+
+def save_csv(rows):
     with open(OUTPUT_URL_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["URL", "Source", "Brand", "QueryType"])
+        writer = csv.DictWriter(
+            f, fieldnames=["URL", "Source", "Brand", "QueryType"]
+        )
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"\n✅ SAVED {len(rows)} UNIQUE URLs → {OUTPUT_URL_CSV}")
+    print(f"\n✅ SAVED {len(rows)} URLs → {OUTPUT_URL_CSV}")
 
 
 if __name__ == "__main__":
